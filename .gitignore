@@ -1,0 +1,13 @@
+runs/
+*.pt
+*.onnx
+*.weights
+__pycache__/
+.ipynb_checkpoints/
+*.pyc
+.env
+datasets/
+*.zip
+drone-aerial-1/
+.claude/
+.venv/
