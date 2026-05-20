@@ -14,14 +14,15 @@
 Standard object detection models fail on aerial drone imagery because objects — people, vehicles — occupy only **4–8 pixels** when a high-resolution image is resized to 640×640 for inference. This project solves that through:
 
 1. **Domain-specific fine-tuning** of YOLOv8 on 4,821 labeled aerial drone images
-2. **SAHI (Slicing Aided Hyper Inference)** — a technique that slices images into overlapping tiles before inference, preserving resolution for small objects
+2. **SAHI (Slicing Aided Hyper Inference)** — slices images into overlapping tiles before inference, preserving resolution for small objects
 3. **End-to-end ML pipeline** from raw dataset to evaluated, deployable model
+4. **Real-world generalization testing** — model tested on unseen internet images to document domain shift behavior
 
 This project was built as part of a practical AI/ML learning journey to demonstrate computer vision competency for DevSecOps and AI research roles.
 
 ---
 
-## 📊 Results
+## 📊 Results — In-Domain (Training Distribution)
 
 | Metric | Base YOLOv8n (pretrained) | Fine-tuned (30 epochs) |
 |--------|--------------------------|------------------------|
@@ -31,7 +32,165 @@ This project was built as part of a practical AI/ML learning journey to demonstr
 | Recall | low | **0.865** |
 | box_loss | 2.521 | **1.239** |
 
-> Training was done on **CPU only** (AMD Ryzen 7 5700U) over ~48 hours. On Google Colab T4 GPU, equivalent training takes ~30 minutes.
+> Training done on **CPU only** (AMD Ryzen 7 5700U) over ~48 hours. Google Colab T4 GPU equivalent: ~30 minutes.
+
+---
+
+## 🌐 Real-World Generalization Testing — Domain Shift Analysis
+
+After training, the model was tested on **unseen internet images** not from any training or test split.
+
+### Test 1 — Aerial City Square (Getty Images)
+![City Square Test](results/internet_vs_gettyimages-1040003524-2048x2048.jpg)
+
+| Model | Detections | Notes |
+|-------|-----------|-------|
+| Generic YOLOv8n | 18 | Misclassified fountain as **"boat" (0.29 conf)** — false positive |
+| Fine-tuned best.pt | 11 | More precise — ignored fountain correctly; higher confidence on true persons (0.71, 0.53) |
+
+### Test 2 — Aerial Parking Lot (iStock)
+![Parking Lot Test](results/internet_vs_istockphoto-1893843900-1024x1024.jpg)
+
+| Model | Detections | Notes |
+|-------|-----------|-------|
+| Generic YOLOv8n | 81 | Correctly detected cars — COCO covers cars at all scales |
+| Fine-tuned best.pt | **0** | Complete miss — domain shift failure |
+
+### 🔍 Why the Fine-tuned Model Performed Worse — Domain Shift Explained
+
+This is **not a model failure — it is classic domain shift**, and understanding it is more valuable than pretending perfect results.
+
+**Root cause:** Training data was high-altitude drone footage with specific characteristics:
+- Objects are 4–8px relative to full image
+- Forest/road/rural backgrounds
+- ~90° top-down camera angle
+
+Internet test images were at **lower altitude, closer zoom, urban setting** — cars are large and detailed, not tiny aerial dots. The model specialized so deeply on high-altitude tiny-object patterns that it no longer recognized close-up vehicles.
+
+The fountain-as-boat false positive in the generic model shows the opposite problem: generalist models make category errors on domain-specific imagery.
+
+```
+High-altitude drone surveillance  →  Fine-tuned best.pt wins
+Street-level or mixed-altitude    →  Generic YOLOv8n more robust
+Production deployment             →  Route by camera altitude metadata
+```
+
+**Production solution:**
+```python
+if camera_altitude_meters > 50:
+    model = fine_tuned_model    # specialized aerial model
+else:
+    model = generic_model        # general purpose fallback
+```
+
+---
+
+## 🧠 Supervised Learning (This Project) vs Reinforcement Learning (Author's Thesis)
+
+*This project uses supervised learning. The author's MASc thesis applies reinforcement learning to DDoS detection in 5G networks. Here is a precise comparison.*
+
+### Supervised Learning — This Project
+
+```
+Labeled dataset (image + bounding box annotations)
+              ↓
+    Model predicts bounding boxes
+              ↓
+    Compare to ground truth → calculate loss
+              ↓
+    Backpropagate → update 3.2M weights
+              ↓
+    Repeat 30 epochs × 4,821 images
+```
+
+- **Teacher:** Human-labeled annotations — someone drew boxes around every person/vehicle
+- **Signal:** Loss = difference between prediction and ground truth label
+- **Goal:** Minimize prediction error on labeled examples
+- **Assumption:** Correct answers known in advance
+
+### Reinforcement Learning — Thesis Research (DDoS/5G)
+
+```
+Agent observes network traffic state (flow features, packet rates)
+              ↓
+    Agent takes action (block / allow / rate-limit packet)
+              ↓
+    Environment returns reward (+1 attack blocked / -1 false positive)
+              ↓
+    Agent updates policy (Q-table / DQN weights)
+              ↓
+    Repeat across thousands of traffic episodes
+```
+
+- **Teacher:** None — environment provides reward/penalty
+- **Signal:** Reward = outcome quality (did blocking stop the attack?)
+- **Goal:** Maximize cumulative reward over time
+- **Assumption:** Correct answers NOT known — only outcomes
+
+### Direct Comparison
+
+| Dimension | This Project (SL) | Thesis Research (RL) |
+|-----------|-------------------|----------------------|
+| Learning signal | Labeled ground truth | Reward from environment |
+| Data requirement | 4,821 annotated images | Simulated/real traffic episodes |
+| When it excels | Pattern recognition | Sequential decision-making |
+| Feedback timing | Immediate (per batch) | Delayed (per episode outcome) |
+| Exploration | No — fixed dataset | Yes — must try actions to learn |
+| Application | "Is there a person at (x,y)?" | "Should I block this packet now?" |
+| Algorithm | Gradient descent + backprop | Q-learning / DQN |
+
+### Why RL Would NOT Work for This Detection Task
+
+Object detection requires knowing exactly where objects are in an image. RL has no mechanism to learn spatial coordinates without explicit reward signals tied to bounding box accuracy — which would require labels anyway. Supervised learning is the correct paradigm for localization tasks.
+
+### Where SL and RL Combine
+
+- **Active perception** — RL agent decides where to point a camera; SL model analyzes the image
+- **Autonomous drone navigation** — RL controls flight path; CV detects objects in real time
+- **Anomaly-triggered surveillance** — RL policy decides when to activate high-resolution scanning based on CV alerts
+
+---
+
+## 🧩 Known Issues & Lessons Learned
+
+Documented honestly — real ML projects always have gaps and surprises.
+
+### Issue 1 — CPU Training Duration (~48 hours)
+**What happened:** 30 epochs on 4,821 images without GPU took ~48 hours.  
+**Fix:** Google Colab T4 GPU — same training in ~30 minutes.  
+**Learning:** Validate on 2–3 epochs before committing to full run.
+
+### Issue 2 — Kernel Crash After Training
+**What happened:** After Epoch 30, Jupyter kernel died (`ExitCode: 3221225477`) during loss curve plotting — Windows memory access violation after sustained heavy computation.  
+**Fix:** Restart kernel before running visualization cells after long training sessions.  
+**Learning:** Save metrics to disk immediately after training. Never chain training + visualization in one kernel session.
+
+### Issue 3 — Dataset Path Mismatch
+**What happened:** Dataset downloaded as `drone-aerial-1/` but notebook referenced `your-dataset/`.  
+**Fix:** Update `DATASET_PATH` to match actual downloaded folder name.  
+**Learning:** Check downloaded folder names before running — version suffixes vary.
+
+### Issue 4 — SAHI Showed 0% Improvement on Fine-tuned Model
+**What happened:** Before/after SAHI showed same detection count (3 vs 3).  
+**Why expected:** Fine-tuned model at 91.57% mAP50 already learned aerial patterns well — inference-time slicing adds minimal signal. SAHI shows dramatic improvement on weaker/generic models.  
+**Better demo:** Run SAHI on generic `yolov8n.pt` to show improvement.  
+**Learning:** SAHI is most valuable when you cannot retrain — e.g., using a third-party model on a new domain.
+
+### Issue 5 — Domain Shift: Parking Lot 0 Detections
+**What happened:** Fine-tuned model found 0 cars in a parking lot image where generic model found 81.  
+**Why:** Model specialized on high-altitude tiny-object patterns — parking lot cars are large, close-up objects outside training distribution.  
+**Fix:** Train on diverse altitudes and environments. Use altitude metadata for model routing.  
+**Learning:** 92% mAP on training distribution ≠ 92% on all aerial images. Always test out-of-distribution.
+
+### Issue 6 — Roboflow Upload Version Incompatibility
+**What happened:** `best.pt` upload to Roboflow hosted API failed — Roboflow requires `ultralytics==8.0.196`, training used `8.4.50`.  
+**Fix:** Use `inference` library locally, or pin version before training for hosted deployment.  
+**Learning:** Check deployment platform requirements before training. Pin versions in `requirements.txt` from the start.
+
+### Issue 7 — Windows Zone.Identifier Files in Git
+**What happened:** WSL2 on Windows creates hidden `*:Zone.Identifier` metadata files that get accidentally staged.  
+**Fix:** `find . -name "*:Zone.Identifier" -delete` before committing.  
+**Learning:** Always inspect `git status` carefully before `git add .` on Windows/WSL2.
 
 ---
 
@@ -41,27 +200,23 @@ This project was built as part of a practical AI/ML learning journey to demonstr
 small-object-detection-yolov8/
 │
 ├── notebooks/
-│   ├── week1_first_inference.ipynb     # Run YOLOv8 out of the box
-│   ├── week2_dataset_exploration.ipynb # Understand YOLO dataset format
-│   ├── week3_finetune.ipynb            # Fine-tune on aerial drone data
-│   └── week4_sahi.ipynb               # SAHI sliced inference comparison
+│   ├── week1_first_inference.ipynb
+│   ├── week2_dataset_exploration.ipynb
+│   ├── week3_finetune.ipynb
+│   └── week4_sahi.ipynb
 │
 ├── results/
-│   ├── loss_curve.png                  # Training loss over 30 epochs
-│   ├── before_after_sahi.png           # Side-by-side inference comparison
-│   ├── sahi_result.png                 # SAHI detection output
-│   └── training_metrics.md            # Final epoch metrics summary
-│
-├── docs/
-│   ├── architecture.md                 # How the pipeline works
-│   ├── use_cases.md                    # Real-world applications
-│   ├── ethics.md                       # AI governance and misuse prevention
-│   └── interview_qa.md                # Technical Q&A deep dive
+│   ├── loss_curve.png
+│   ├── before_after_sahi.png
+│   ├── sahi_result.png
+│   ├── internet_vs_gettyimages-1040003524-2048x2048.jpg
+│   ├── internet_vs_istockphoto-1893843900-1024x1024.jpg
+│   └── training_metrics.md
 │
 ├── models/
-│   └── README.md                       # Instructions to obtain best.pt
+│   └── README.md
 │
-├── .env.example                        # API key template (safe to commit)
+├── .env.example
 ├── .gitignore
 ├── requirements.txt
 └── README.md
@@ -71,8 +226,6 @@ small-object-detection-yolov8/
 
 ## 🚀 Quick Start
 
-### 1. Clone and install dependencies
-
 ```bash
 git clone https://github.com/fa1829/small-object-detection-yolov8.git
 cd small-object-detection-yolov8
@@ -81,375 +234,86 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Set up API keys
+Run notebooks in order: Week 1 → Week 2 → Week 3 → Week 4
 
-```bash
-cp .env.example .env
-# Edit .env and add your Roboflow API key
-```
-
-### 3. Run inference with the pretrained model (no training needed)
-
-```python
-from ultralytics import YOLO
-
-model = YOLO("yolov8n.pt")  # downloads automatically
-results = model("your_aerial_image.jpg")
-results[0].show()
-```
-
-### 4. Run notebooks in order
-
-```
-Week 1 → Week 2 → Week 3 → Week 4
-```
-
-> **Week 3 (training) recommendation:** Use Google Colab with T4 GPU.
-> Runtime → Change runtime type → T4 GPU → Save
-
----
-
-## 🧠 How It Works
-
-### The Small Object Problem
-
-When a 4K drone image is resized to 640×640 pixels for YOLOv8 inference, a person who occupied 40×40 pixels becomes just **4×4 pixels** — barely enough visual information for the model to detect. This is the core challenge of small object detection.
-
-### Transfer Learning Pipeline
-
-```
-pretrained yolov8n.pt          fine-tuned best.pt
-(trained on COCO, 80 classes)  (specialized: aerial view)
-         |                              |
-         ↓                              ↓
-  General objects              Tiny aerial objects
-  Street-level view            Drone perspective
-  mAP50 ~0.30 on aerial        mAP50 0.9157 on aerial
-```
-
-The model starts with weights learned from COCO (a dataset of 330K everyday images). Fine-tuning shifts those 3.2 million parameters from general object recognition to aerial small object specialist — exactly like a general doctor becoming a radiologist through specialized training.
-
-### What Happens During Training (Each Epoch)
-
-1. **Forward pass** — model sees an aerial image, predicts bounding boxes
-2. **Loss calculation** — compares predictions to ground truth labels:
-   - `box_loss` — how wrong the box position/size is
-   - `cls_loss` — how wrong the class prediction is
-   - `dfl_loss` — how precise the box edges are
-3. **Backpropagation** — adjusts weights to reduce loss
-4. **Repeat** for all 4,821 images, 30 times
-
-Loss curve shows steady descent from 2.521 → 1.239, confirming learning.
-
-### SAHI — Slicing Aided Hyper Inference
-
-SAHI addresses small object detection at inference time (no retraining needed):
-
-```
-Full image (e.g., 1920×1080)
-         |
-         ↓
-Slice into overlapping tiles (e.g., 512×512 with 20% overlap)
-         |
-         ↓
-Run YOLOv8 inference on EACH tile separately
-         |
-         ↓
-Merge and deduplicate detections (Non-Maximum Suppression)
-         |
-         ↓
-Final result with more detected small objects
-```
-
-In this project, the fine-tuned model achieved such high accuracy (92% mAP50) that SAHI provided minimal additional improvement — demonstrating that **domain-specific fine-tuning can be as powerful as inference-time augmentation techniques**.
+> Week 3 training: use Google Colab T4 GPU (Runtime → Change runtime type → T4 GPU)
 
 ---
 
 ## 📁 Dataset
 
-**Source:** [Roboflow Universe — drone-aerial dataset](https://universe.roboflow.com)
-
 | Property | Value |
 |----------|-------|
+| Source | Roboflow Universe — drone-aerial dataset |
 | Total images | 4,821 |
-| Train split | 87% (4,194 images) |
-| Validation split | 8% (386 images) |
-| Test split | 4% (193 images) |
-| Classes | 1 (person/vehicle from aerial view) |
+| Train split | 87% |
+| Validation split | 8% |
+| Test split | 4% |
+| Classes | 1 (person/vehicle aerial view) |
 | Format | YOLOv8 (images + .txt labels + data.yaml) |
-| Perspective | Aerial drone, varying altitudes |
-
-### Dataset Format (YOLO)
-
-```
-drone-aerial-1/
-├── train/
-│   ├── images/   ← .jpg files
-│   └── labels/   ← .txt files (one per image)
-├── valid/
-│   ├── images/
-│   └── labels/
-├── test/
-│   ├── images/
-│   └── labels/
-└── data.yaml     ← paths + class names config
-```
-
-Each label file contains one line per object:
-```
-class_id  x_center  y_center  width  height
-0         0.512     0.341     0.023  0.041
-```
-All values normalized 0–1 relative to image dimensions. Small objects have width/height values like `0.02 × 0.02` — that's the challenge.
-
----
-
-## 🔬 Technical Stack
-
-| Component | Tool | Purpose |
-|-----------|------|---------|
-| Model architecture | YOLOv8n (Ultralytics) | Object detection |
-| Deep learning framework | PyTorch 2.12 | Training engine |
-| Dataset management | Roboflow | Labeled dataset download |
-| Inference augmentation | SAHI | Small object improvement |
-| Data analysis | Pandas, Matplotlib | Results visualization |
-| Environment | Python 3.11, venv | Dependency management |
-| Version control | Git/GitHub | Portfolio showcase |
-
----
-
-## 🌍 Real-World Use Cases
-
-### Security & Surveillance
-- **Perimeter monitoring** — detect unauthorized persons in restricted aerial zones
-- **Physical SOC integration** — combine with SIEM systems for automated alerts when unknown persons detected
-- **Border surveillance** — aerial detection of unauthorized crossings
-
-### Search & Rescue
-- **Disaster response** — locate survivors in collapsed buildings or remote terrain from drone footage
-- **Missing persons** — scan large areas faster than human observers
-
-### Smart Cities & Traffic
-- **Aerial traffic management** — count and classify vehicles at intersections
-- **Crowd density analysis** — monitor public gatherings from above
-- **Accident detection** — flag unusual vehicle behavior in real time
-
-### Environmental & Agriculture
-- **Wildlife conservation** — count animals in reserves, detect poachers
-- **Crop monitoring** — detect disease patches or irrigation issues from drone surveys
-- **Deforestation tracking** — compare aerial imagery over time
-
-### Healthcare (analogous application)
-The small object detection pipeline directly maps to medical imaging:
-- Aerial drone person (~4px) ≡ Early-stage tumor in MRI (~small region)
-- SAHI tiling ≡ Pathology slide scanning in overlapping windows
-- Fine-tuning on domain data ≡ Training on labeled medical scans
 
 ---
 
 ## ⚖️ Ethics & Responsible AI
 
 ### The Dual-Use Problem
-A model that detects people from aerial drones can:
-- ✅ Save lives in search and rescue
-- ✅ Monitor wildlife without human intrusion
-- ❌ Enable mass surveillance
-- ❌ Target individuals in conflict zones
+- ✅ Search and rescue, wildlife monitoring
+- ❌ Mass surveillance, conflict zone targeting
 
-### Misuse Prevention Framework
-
-**Access Control (Zero-Trust for Models)**
+### Misuse Prevention
 ```python
-# Never expose model file directly
-# Always gate behind authenticated API
-
 if api_key not in authorized_keys:
-    return 403  # Forbidden
+    return 403
 if request.use_case not in ALLOWED_USE_CASES:
     return 403
-if rate_limit_exceeded(api_key):
-    return 429  # Too Many Requests
 result = model(image)
 log_inference(api_key, timestamp, use_case)
 return result
 ```
 
-**Regulatory Compliance**
-- **EU AI Act** — people detection from aerial systems classified as "high risk"; requires registration, human oversight, audit trails
-- **NIST AI RMF** — risk identification, measurement, and management framework (maps to cybersecurity risk frameworks)
-- **GDPR** — images of identifiable persons require consent; anonymization/blurring of non-target individuals recommended
-
-**Responsible Deployment Checklist**
-- [ ] Define and document intended use cases
-- [ ] Publish model card with known limitations
-- [ ] Implement rate limiting and audit logging
-- [ ] Require human review for high-stakes decisions
-- [ ] Regular bias and performance audits
-- [ ] Incident response plan for model failures
+**Regulatory:** EU AI Act (high-risk), NIST AI RMF, GDPR consent requirements.
 
 ---
 
-## 💰 Monetization & Deployment
+## 📈 Training Progress
 
-### Option 1 — Roboflow Hosted API
-Upload `best.pt` to Roboflow workspace → Deploy as cloud endpoint → Gate access with API keys.
-
-Users call:
-```python
-from roboflow import Roboflow
-rf = Roboflow(api_key="USER_KEY")
-model = rf.workspace("khandoker-faisal").model("aerial-detection", 1)
-result = model.predict("drone_image.jpg").json()
-```
-
-### Option 2 — FastAPI Self-Hosted
-```python
-from fastapi import FastAPI, UploadFile
-from ultralytics import YOLO
-
-app = FastAPI()
-model = YOLO("best.pt")
-
-@app.post("/detect")
-async def detect(file: UploadFile):
-    image = await file.read()
-    results = model(image)
-    return {"detections": len(results[0].boxes)}
-```
-
-### Option 3 — Edge Deployment
-Export to ONNX for edge devices (Raspberry Pi, Jetson Nano):
-```python
-model.export(format="onnx")
-# Deploy best.onnx to edge hardware
-```
-
----
-
-## 📈 Training Details
-
-### Configuration
-
-```python
-model = YOLO("yolov8n.pt")  # nano variant — fastest, lightest
-results = model.train(
-    data="drone-aerial-1/data.yaml",
-    epochs=30,
-    imgsz=640,
-    batch=16,
-    name="small_object_run1",
-    exist_ok=True
-)
-```
-
-### Training Progress
-
-| Epoch | box_loss | cls_loss | dfl_loss | mAP50 |
-|-------|----------|----------|----------|-------|
-| 1 | 2.521 | 4.789 | 1.374 | ~0.10 |
-| 5 | 1.930 | 1.177 | 1.078 | 0.721 |
-| 19 | 1.538 | 0.768 | 0.936 | 0.887 |
-| 30 | 1.239 | 0.580 | 0.900 | **0.922** |
-
-Loss curves show consistent descent — no overfitting, no plateau — indicating the dataset size and epoch count were well-matched.
-
-### Hardware
-
-| Property | Value |
-|----------|-------|
-| CPU | AMD Ryzen 7 5700U |
-| GPU | None (CPU-only training) |
-| RAM | 16GB |
-| Training time | ~48 hours |
-| Equivalent GPU time | ~30 min (Google Colab T4) |
-
----
-
-## 🔑 Environment Setup
-
-```bash
-# .env.example — copy to .env and fill in values
-ROBOFLOW_API_KEY=your_roboflow_api_key_here
-```
-
-Usage in notebooks:
-```python
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
-rf = Roboflow(api_key=os.getenv("ROBOFLOW_API_KEY"))
-```
-
-**Never commit `.env` to version control.** See `.gitignore`.
+| Epoch | box_loss | mAP50 |
+|-------|----------|-------|
+| 1 | 2.521 | ~0.10 |
+| 5 | 1.930 | 0.721 |
+| 19 | 1.538 | 0.887 |
+| 30 | **1.239** | **0.922** |
 
 ---
 
 ## 📦 Model Weights
 
-The fine-tuned `best.pt` (~23MB) is not stored in this repository.
-
-**To obtain:**
-
-**Option A — Train yourself (recommended for learning):**
-Follow `notebooks/week3_finetune.ipynb`. Use Google Colab T4 GPU for ~30 minute training.
-
-**Option B — Request access:**
-Contact [faisaleeeb@gmail.com](mailto:faisaleeeb@gmail.com) for research or evaluation access.
-
-**Option C — Roboflow hosted model:**
-Coming soon — link will be added here upon deployment.
-
-**Final model metrics:**
-```
-mAP50:    0.9157
-mAP50-95: 0.5402
-Precision: 0.929
-Recall:    0.865
-Parameters: 3.2M
-Model size: ~23MB
-Inference speed: ~85ms/image (CPU)
-```
-
----
-
-## 🧪 Weekly Learning Journey
-
-This project was built as a structured 4-week deep dive:
-
-| Week | Notebook | Goal | Key Learning |
-|------|----------|------|--------------|
-| 1 | `week1_first_inference.ipynb` | Run YOLOv8 out of the box | Confidence scores, bounding boxes, COCO classes |
-| 2 | `week2_dataset_exploration.ipynb` | Understand YOLO data format | images/, labels/, data.yaml, annotation structure |
-| 3 | `week3_finetune.ipynb` | Fine-tune on aerial data | Transfer learning, loss curves, mAP metrics |
-| 4 | `week4_sahi.ipynb` | SAHI sliced inference | Before/after comparison, inference-time augmentation |
+`best.pt` (~23MB) not stored in repo. To obtain:
+- **Train yourself:** `notebooks/week3_finetune.ipynb` on Colab T4 (~30 min)
+- **Request access:** faisaleeeb@gmail.com
 
 ---
 
 ## 🔗 References
 
-- [Ultralytics YOLOv8 Documentation](https://docs.ultralytics.com)
-- [SAHI — Slicing Aided Hyper Inference](https://github.com/obss/sahi)
+- [Ultralytics YOLOv8](https://docs.ultralytics.com)
+- [SAHI](https://github.com/obss/sahi)
 - [Roboflow Universe](https://universe.roboflow.com)
-- [EU AI Act — High Risk AI Systems](https://artificialintelligenceact.eu)
-- [NIST AI Risk Management Framework](https://www.nist.gov/system/files/documents/2023/01/26/AI%20RMF%201.0.pdf)
+- [EU AI Act](https://artificialintelligenceact.eu)
+- [NIST AI RMF](https://www.nist.gov/system/files/documents/2023/01/26/AI%20RMF%201.0.pdf)
 
 ---
 
 ## 👤 Author
 
-**Khandoker Faisal**
-Master's student — Information Systems Security, Concordia University, Montreal
-
-- GitHub: [@fa1829](https://github.com/fa1829)
-- Email: faisaleeeb@gmail.com
-- Target role: DevSecOps / AI Security Engineer
-
-*This project demonstrates practical ML competency — from raw dataset to fine-tuned model to deployment-ready inference pipeline — with security and ethics considerations integrated throughout.*
+**Khandoker Faisal**  
+MASc Information Systems Security — Concordia University, Montreal  
+Thesis: Reinforcement Learning-Based DDoS Mitigation in 5G Networks  
+GitHub: [@fa1829](https://github.com/fa1829) · faisaleeeb@gmail.com
 
 ---
 
 ## 📄 License
 
-MIT License — free to use for research and educational purposes.
-For commercial use or deployment in security-sensitive contexts, contact the author.
+MIT License — free for research and educational use.  
+For commercial or security-sensitive deployment, contact the author.
